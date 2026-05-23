@@ -1,9 +1,19 @@
 from unittest.mock import Mock
 
 import httpx
+import pytest
 import respx
+from pydantic import ValidationError
 
-from x_digest.digest import fetch_all, post_plain_text, render_raw_text
+from x_digest.digest import (
+    Digest,
+    DigestLink,
+    DigestNotablePost,
+    DigestTheme,
+    fetch_all,
+    post_plain_text,
+    render_raw_text,
+)
 
 
 @respx.mock
@@ -137,3 +147,59 @@ def test_post_plain_text_sends_short_text_unchanged() -> None:
     mock_client = Mock()
     post_plain_text(mock_client, channel="C123", text="short message", max_chars=2000)
     mock_client.chat_postMessage.assert_called_once_with(channel="C123", text="short message")
+
+
+def _minimal_digest_payload(themes: int = 1) -> dict[str, object]:
+    return {
+        "date": "2026-05-22",
+        "headline": "Sample headline",
+        "themes": [
+            {
+                "title": f"Theme {i}",
+                "synthesis": "Prose paragraph.",
+                "notable_posts": [
+                    {"handle": "@alice", "excerpt": "quote", "url": "https://x.com/alice/status/1"}
+                ],
+            }
+            for i in range(themes)
+        ],
+        "quick_hits": ["one-liner"],
+        "links": [{"title": "Example", "url": "https://example.com"}],
+    }
+
+
+def test_digest_accepts_a_well_formed_payload() -> None:
+    digest = Digest.model_validate(_minimal_digest_payload())
+    assert digest.headline == "Sample headline"
+    assert len(digest.themes) == 1
+    assert digest.themes[0].notable_posts[0].handle == "@alice"
+
+
+def test_digest_rejects_more_than_ten_themes() -> None:
+    payload = _minimal_digest_payload(themes=11)
+    with pytest.raises(ValidationError):
+        Digest.model_validate(payload)
+
+
+def test_digest_rejects_more_than_eight_notable_posts_per_theme() -> None:
+    payload = _minimal_digest_payload()
+    payload["themes"][0]["notable_posts"] = [  # type: ignore[index]
+        {"handle": f"@h{i}", "excerpt": "e", "url": f"https://x.com/h{i}/status/{i}"}
+        for i in range(9)
+    ]
+    with pytest.raises(ValidationError):
+        Digest.model_validate(payload)
+
+
+def test_digest_rejects_more_than_fifteen_quick_hits() -> None:
+    payload = _minimal_digest_payload()
+    payload["quick_hits"] = [f"hit {i}" for i in range(16)]
+    with pytest.raises(ValidationError):
+        Digest.model_validate(payload)
+
+
+def test_digest_models_are_directly_importable() -> None:
+    # Smoke: each model exists and accepts a minimal instance via field args.
+    DigestNotablePost(handle="@a", excerpt="x", url="https://x.com/a/status/1")
+    DigestLink(title="t", url="https://example.com")
+    DigestTheme(title="t", synthesis="s", notable_posts=[])

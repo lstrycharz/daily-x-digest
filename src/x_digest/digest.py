@@ -4,10 +4,49 @@ One deep module: fetch → normalize → synthesize → post.
 Phase 1 scope: fetch only.
 """
 
+from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import BaseModel, Field
 from slack_sdk import WebClient
+
+SYSTEM_PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "system.md"
+
+
+def load_system_prompt() -> str:
+    return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+
+
+class DigestNotablePost(BaseModel):
+    handle: str
+    excerpt: str
+    url: str
+
+
+class DigestTheme(BaseModel):
+    title: str
+    synthesis: str
+    notable_posts: list[DigestNotablePost] = Field(max_length=8)
+
+
+class DigestLink(BaseModel):
+    title: str
+    url: str
+
+
+class Digest(BaseModel):
+    """Validated synthesis output from Claude.
+
+    Array bounds are belt-and-suspenders against prompt-injection driving runaway
+    output. The system prompt also asks for 1-8 themes; this cap is enforced.
+    """
+
+    date: str
+    headline: str
+    themes: list[DigestTheme] = Field(min_length=0, max_length=10)
+    quick_hits: list[str] = Field(default_factory=list, max_length=15)
+    links: list[DigestLink] = Field(default_factory=list)
 
 X_API_BASE = "https://api.x.com/2"
 TWEET_FIELDS = "created_at,public_metrics,referenced_tweets,entities,note_tweet"
