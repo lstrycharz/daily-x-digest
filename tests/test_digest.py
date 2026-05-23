@@ -11,9 +11,37 @@ from x_digest.digest import (
     DigestNotablePost,
     DigestTheme,
     fetch_all,
+    normalize,
     post_plain_text,
     render_raw_text,
 )
+
+
+def _tweet(
+    tweet_id: str,
+    handle: str = "alice",
+    text: str = "hello",
+    created_at: str = "2026-05-22T10:00:00.000Z",
+    likes: int = 0,
+    reposts: int = 0,
+    note_tweet_text: str | None = None,
+    referenced_tweets: list[dict[str, str]] | None = None,
+    urls: list[dict[str, str]] | None = None,
+) -> dict[str, object]:
+    tw: dict[str, object] = {
+        "id": tweet_id,
+        "handle": handle,
+        "text": text,
+        "created_at": created_at,
+        "public_metrics": {"like_count": likes, "retweet_count": reposts},
+    }
+    if note_tweet_text is not None:
+        tw["note_tweet"] = {"text": note_tweet_text}
+    if referenced_tweets is not None:
+        tw["referenced_tweets"] = referenced_tweets
+    if urls is not None:
+        tw["entities"] = {"urls": urls}
+    return tw
 
 
 @respx.mock
@@ -203,3 +231,86 @@ def test_digest_models_are_directly_importable() -> None:
     DigestNotablePost(handle="@a", excerpt="x", url="https://x.com/a/status/1")
     DigestLink(title="t", url="https://example.com")
     DigestTheme(title="t", synthesis="s", notable_posts=[])
+
+
+def test_normalize_returns_empty_corpus_for_empty_input() -> None:
+    corpus, included, dropped = normalize([], {})
+    assert corpus == ""
+    assert included == 0
+    assert dropped == 0
+
+
+def test_normalize_renders_one_tweet_with_metrics_and_canonical_url() -> None:
+    tweets = [_tweet("1", handle="alice", text="hello world", likes=12, reposts=4)]
+    corpus, included, dropped = normalize(tweets, {})
+    assert included == 1
+    assert dropped == 0
+    assert "@alice" in corpus
+    assert "likes 12" in corpus
+    assert "reposts 4" in corpus
+    assert "hello world" in corpus
+    assert "https://x.com/alice/status/1" in corpus
+
+
+def test_normalize_dedupes_by_tweet_id() -> None:
+    tweets = [_tweet("1", text="first"), _tweet("1", text="duplicate copy")]
+    corpus, included, _ = normalize(tweets, {})
+    assert included == 1
+    assert corpus.count("https://x.com/alice/status/1") == 1
+
+
+def test_normalize_sorts_tweets_chronologically_ascending() -> None:
+    earlier = _tweet("1", text="EARLY", created_at="2026-05-22T08:00:00.000Z")
+    later = _tweet("2", text="LATE", created_at="2026-05-22T22:00:00.000Z")
+    corpus, _, _ = normalize([later, earlier], {})
+    assert corpus.index("EARLY") < corpus.index("LATE")
+
+
+def test_normalize_prefers_note_tweet_text_over_truncated_text() -> None:
+    tweets = [_tweet("1", text="short truncated…", note_tweet_text="full long-form body")]
+    corpus, _, _ = normalize(tweets, {})
+    assert "full long-form body" in corpus
+    assert "short truncated" not in corpus
+
+
+def test_normalize_resolves_quoted_tweet_text_from_includes() -> None:
+    tweets = [
+        _tweet("1", text="commentary", referenced_tweets=[{"type": "quoted", "id": "999"}])
+    ]
+    includes = {"999": {"id": "999", "text": "the quoted source"}}
+    corpus, _, _ = normalize(tweets, includes)
+    assert "the quoted source" in corpus
+
+
+def test_normalize_handles_missing_quoted_source_without_failing() -> None:
+    tweets = [
+        _tweet("1", text="commentary", referenced_tweets=[{"type": "quoted", "id": "missing"}])
+    ]
+    corpus, included, _ = normalize(tweets, {})  # includes is empty
+    assert included == 1
+    assert "commentary" in corpus
+    assert "missing" not in corpus  # no broken-quote string leaks through
+
+
+def test_normalize_expands_tco_urls_to_full_destination() -> None:
+    tweets = [
+        _tweet(
+            "1",
+            text="check this https://t.co/abc",
+            urls=[{"url": "https://t.co/abc", "expanded_url": "https://example.com/article"}],
+        )
+    ]
+    corpus, _, _ = normalize(tweets, {})
+    assert "https://example.com/article" in corpus
+    assert "https://t.co/abc" not in corpus.split("url:")[1]  # not in the url: section
+
+
+def test_normalize_drops_lowest_engagement_posts_when_over_token_cap() -> None:
+    # With a tight cap, the highest-engagement tweet survives, the lowest is dropped.
+    high = _tweet("1", text="x" * 800, likes=1000, reposts=500)
+    low = _tweet("2", text="y" * 800, likes=1, reposts=0)
+    corpus, included, dropped = normalize([high, low], {}, max_corpus_tokens=300)
+    assert included == 1
+    assert dropped == 1
+    assert "x" * 100 in corpus  # high-engagement body present
+    assert "y" * 100 not in corpus  # low-engagement body dropped
