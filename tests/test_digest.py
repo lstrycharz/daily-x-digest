@@ -8,8 +8,6 @@ from pydantic import ValidationError
 
 from x_digest.digest import (
     Digest,
-    DigestLink,
-    DigestNotablePost,
     DigestTheme,
     already_posted_today,
     digest_header_marker,
@@ -263,15 +261,14 @@ def _minimal_digest_payload(themes: int = 1) -> dict[str, object]:
         "themes": [
             {
                 "title": f"Theme {i}",
-                "synthesis": "Prose paragraph.",
-                "notable_posts": [
-                    {"handle": "@alice", "excerpt": "quote", "url": "https://x.com/alice/status/1"}
-                ],
+                "synthesis": (
+                    "Short synthesis citing "
+                    "<https://x.com/alice/status/1|@alice>."
+                ),
             }
             for i in range(themes)
         ],
         "quick_hits": ["one-liner"],
-        "links": [{"title": "Example", "url": "https://example.com"}],
     }
 
 
@@ -279,37 +276,24 @@ def test_digest_accepts_a_well_formed_payload() -> None:
     digest = Digest.model_validate(_minimal_digest_payload())
     assert digest.headline == "Sample headline"
     assert len(digest.themes) == 1
-    assert digest.themes[0].notable_posts[0].handle == "@alice"
+    assert "@alice" in digest.themes[0].synthesis
 
 
-def test_digest_rejects_more_than_ten_themes() -> None:
-    payload = _minimal_digest_payload(themes=11)
+def test_digest_rejects_more_than_six_themes() -> None:
+    payload = _minimal_digest_payload(themes=7)
     with pytest.raises(ValidationError):
         Digest.model_validate(payload)
 
 
-def test_digest_rejects_more_than_eight_notable_posts_per_theme() -> None:
+def test_digest_rejects_more_than_five_quick_hits() -> None:
     payload = _minimal_digest_payload()
-    payload["themes"][0]["notable_posts"] = [  # type: ignore[index]
-        {"handle": f"@h{i}", "excerpt": "e", "url": f"https://x.com/h{i}/status/{i}"}
-        for i in range(9)
-    ]
-    with pytest.raises(ValidationError):
-        Digest.model_validate(payload)
-
-
-def test_digest_rejects_more_than_fifteen_quick_hits() -> None:
-    payload = _minimal_digest_payload()
-    payload["quick_hits"] = [f"hit {i}" for i in range(16)]
+    payload["quick_hits"] = [f"hit {i}" for i in range(6)]
     with pytest.raises(ValidationError):
         Digest.model_validate(payload)
 
 
 def test_digest_models_are_directly_importable() -> None:
-    # Smoke: each model exists and accepts a minimal instance via field args.
-    DigestNotablePost(handle="@a", excerpt="x", url="https://x.com/a/status/1")
-    DigestLink(title="t", url="https://example.com")
-    DigestTheme(title="t", synthesis="s", notable_posts=[])
+    DigestTheme(title="t", synthesis="s")
 
 
 def test_normalize_returns_empty_corpus_for_empty_input() -> None:
@@ -482,25 +466,17 @@ def test_synthesize_raises_when_retry_also_fails() -> None:
     assert client.messages.create.call_count == 2
 
 
-def _sample_digest(synthesis: str = "Prose paragraph.") -> Digest:
+def _sample_digest(synthesis: str | None = None) -> Digest:
+    if synthesis is None:
+        synthesis = (
+            "Two-sentence prose synthesis citing "
+            "<https://x.com/alice/status/1|@alice> inline."
+        )
     return Digest(
         date="2026-05-22",
         headline="The day in one line",
-        themes=[
-            DigestTheme(
-                title="First Theme",
-                synthesis=synthesis,
-                notable_posts=[
-                    DigestNotablePost(
-                        handle="@alice",
-                        excerpt="alice quote",
-                        url="https://x.com/alice/status/1",
-                    )
-                ],
-            )
-        ],
+        themes=[DigestTheme(title="First Theme", synthesis=synthesis)],
         quick_hits=["Quick hit one", "Quick hit two"],
-        links=[DigestLink(title="Background reading", url="https://example.com/article")],
     )
 
 
@@ -517,27 +493,31 @@ def test_post_to_slack_header_carries_idempotency_marker() -> None:
     assert digest_header_marker("2026-05-22") in header_text
 
 
-def test_post_to_slack_renders_theme_title_synthesis_and_notable_posts() -> None:
+def test_post_to_slack_renders_theme_title_and_synthesis_with_inline_citation() -> None:
     client = Mock()
     post_to_slack(client, "C123", _sample_digest(), _summary())
     flat = json.dumps(client.chat_postMessage.call_args.kwargs["blocks"])
     assert "*First Theme*" in flat
-    assert "Prose paragraph." in flat
     assert "@alice" in flat
-    assert "alice quote" in flat
-    assert "https://x.com/alice/status/1" in flat
+    assert "https://x.com/alice/status/1" in flat  # citation URL embedded inline
 
 
-def test_post_to_slack_includes_quick_hits_links_and_coverage_footer() -> None:
+def test_post_to_slack_includes_quick_hits_and_coverage_footer() -> None:
     client = Mock()
     post_to_slack(client, "C123", _sample_digest(), _summary(fetched=48, failed=2, dropped=12))
     flat = json.dumps(client.chat_postMessage.call_args.kwargs["blocks"])
     assert "Quick hit one" in flat
     assert "Quick hit two" in flat
-    assert "Background reading" in flat
-    assert "https://example.com/article" in flat
     assert "48" in flat and "50" in flat  # coverage 48/50
     assert "12" in flat  # dropped count
+
+
+def test_post_to_slack_does_not_render_a_separate_links_section() -> None:
+    # Citations are now inline in synthesis — no standalone Links block should exist.
+    client = Mock()
+    post_to_slack(client, "C123", _sample_digest(), _summary())
+    flat = json.dumps(client.chat_postMessage.call_args.kwargs["blocks"])
+    assert "*Links*" not in flat
 
 
 def test_post_to_slack_chunks_synthesis_over_section_text_limit() -> None:

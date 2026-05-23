@@ -40,35 +40,26 @@ def load_system_prompt() -> str:
     return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
 
 
-class DigestNotablePost(BaseModel):
-    handle: str
-    excerpt: str
-    url: str
-
-
 class DigestTheme(BaseModel):
+    """One theme worth of synthesis. Citations live as Slack mrkdwn inside `synthesis`."""
+
     title: str
     synthesis: str
-    notable_posts: list[DigestNotablePost] = Field(max_length=8)
-
-
-class DigestLink(BaseModel):
-    title: str
-    url: str
 
 
 class Digest(BaseModel):
     """Validated synthesis output from Claude.
 
-    Array bounds are belt-and-suspenders against prompt-injection driving runaway
-    output. The system prompt also asks for 1-8 themes; this cap is enforced.
+    Array bounds defend against prompt-injection driving runaway output and pair
+    with the "1-6 themes" guidance in prompts/system.md. Citations are inline
+    Slack mrkdwn (`<url|@handle>`) inside each theme's synthesis — no separate
+    notable_posts / links structures.
     """
 
     date: str
     headline: str
-    themes: list[DigestTheme] = Field(min_length=0, max_length=10)
-    quick_hits: list[str] = Field(default_factory=list, max_length=15)
-    links: list[DigestLink] = Field(default_factory=list)
+    themes: list[DigestTheme] = Field(min_length=0, max_length=6)
+    quick_hits: list[str] = Field(default_factory=list, max_length=5)
 
 X_API_BASE = "https://api.x.com/2"
 TWEET_FIELDS = "created_at,public_metrics,referenced_tweets,entities,note_tweet"
@@ -512,25 +503,11 @@ def _build_blocks(digest: Digest, fetch_summary: dict[str, int]) -> list[dict[st
         }
     ]
     for theme in digest.themes:
-        blocks.extend(_theme_blocks(theme))
+        blocks.extend(_section_chunks(f"*{theme.title}*\n{theme.synthesis}"))
     if digest.quick_hits:
         bulleted = "\n".join(f"• {h}" for h in digest.quick_hits)
         blocks.extend(_section_chunks(f"*Quick hits*\n{bulleted}"))
-    if digest.links:
-        link_lines = [f"<{link.url}|{link.title}>" for link in digest.links]
-        blocks.extend(_section_chunks("*Links*\n" + "\n".join(link_lines)))
     blocks.append(_coverage_footer(fetch_summary))
-    return blocks
-
-
-def _theme_blocks(theme: DigestTheme) -> list[dict[str, Any]]:
-    blocks: list[dict[str, Any]] = [{"type": "divider"}]
-    blocks.extend(_section_chunks(f"*{theme.title}*\n{theme.synthesis}"))
-    if theme.notable_posts:
-        notable_lines = [
-            f"• <{p.url}|@{p.handle.lstrip('@')}>: {p.excerpt}" for p in theme.notable_posts
-        ]
-        blocks.extend(_section_chunks("\n".join(notable_lines)))
     return blocks
 
 
