@@ -501,26 +501,3 @@ def _coverage_footer(fetch_summary: dict[str, int]) -> dict[str, Any]:
     }
 
 
-def render_raw_text(tweets: list[dict[str, Any]]) -> str:
-    """Phase 1 plain-text rendering — one tweet per block, separated by `---`.
-
-    The themed Block Kit layout lands in Phase 2 alongside Claude synthesis.
-    """
-    blocks = [
-        f"[@{t['handle']} | {t.get('created_at', '')}]\n"
-        f"{t.get('text', '')}\n"
-        f"https://x.com/{t['handle']}/status/{t['id']}"
-        for t in tweets
-    ]
-    return "\n---\n".join(blocks)
-
-
-def post_plain_text(
-    client: WebClient,
-    channel: str,
-    text: str,
-    max_chars: int = 2000,
-) -> None:
-    """Phase 1 Slack delivery — single chat.postMessage with a hard truncation."""
-    payload = text if len(text) <= max_chars else text[: max_chars - 1] + "…"
-    client.chat_postMessage(channel=channel, text=payload)

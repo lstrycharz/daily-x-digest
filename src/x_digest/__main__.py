@@ -1,8 +1,9 @@
 """CLI entrypoint for the X Daily Digest.
 
-Phase 1 scope: fetch one (or a few) accounts → render plain text → print or
-post to Slack. The full pipeline (Claude synthesis, Block Kit, alert path,
-idempotency check) is layered on in Phases 2 and 3.
+Wires the four-stage pipeline: fetch → normalize → synthesize → post.
+The {7,8}-hour gate runs by default; --force bypasses it. --dry-run runs
+the full pipeline (including Claude) but prints the validated Digest as
+JSON instead of posting to Slack — useful for prompt iteration.
 """
 
 from __future__ import annotations
@@ -16,13 +17,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from anthropic import Anthropic
 from slack_sdk import WebClient
 
-from x_digest.digest import fetch_all, post_plain_text, render_raw_text
+from x_digest.digest import (
+    fetch_all,
+    normalize,
+    post_quiet_day,
+    post_to_slack,
+    synthesize,
+)
 from x_digest.time_utils import previous_day_window, should_run
 
 DEFAULT_TZ = "America/New_York"
 ACCOUNTS_FILE = Path(__file__).resolve().parents[2] / "accounts.json"
+RUNS_DIR = Path(__file__).resolve().parents[2] / "runs"
 
 
 class _JsonFormatter(logging.Formatter):
@@ -74,17 +83,26 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _save_corpus(corpus: str, date_iso: str) -> None:
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    (RUNS_DIR / f"{date_iso}.txt").write_text(corpus, encoding="utf-8")
+
+
+def _target_date_iso(start_iso: str) -> str:
+    return start_iso.split("T")[0]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="x-digest", description="X Daily Digest")
     parser.add_argument("--force", action="store_true", help="skip the hour gate")
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="print rendered output; skip Slack post (Slack creds not required)",
+        help="run the full pipeline but print the Digest as JSON; skip Slack post",
     )
     parser.add_argument(
         "--account",
-        help="limit to a single handle from accounts.json (useful for the tracer bullet)",
+        help="limit to a single handle from accounts.json",
     )
     args = parser.parse_args(argv)
 
@@ -98,14 +116,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     bearer_token = _require_env("X_BEARER_TOKEN")
+    anthropic_client = Anthropic(api_key=_require_env("ANTHROPIC_API_KEY"))
+    slack_client = (
+        WebClient(token=_require_env("SLACK_BOT_TOKEN")) if not args.dry_run else None
+    )
+    slack_channel = _require_env("SLACK_CHANNEL_ID") if not args.dry_run else None
+
     start_iso, end_iso = previous_day_window(now_utc, tz_name)
+    target_date = _target_date_iso(start_iso)
     accounts = _load_accounts(args.account)
 
     log.info(
         "fetching",
         extra={"stage": "fetch", "accounts": len(accounts), "window": [start_iso, end_iso]},
     )
-    tweets, _, failed = fetch_all(accounts, start_iso, end_iso, bearer_token)
+    tweets, includes, failed = fetch_all(accounts, start_iso, end_iso, bearer_token)
     log.info(
         "fetch complete",
         extra={
@@ -118,17 +143,44 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if not tweets:
-        log.info("no posts found in window", extra={"stage": "run"})
+        log.info("no posts in window — posting quiet-day message", extra={"stage": "run"})
+        if args.dry_run:
+            print(f"[dry-run] would post quiet-day message for {target_date}")
+        else:
+            assert slack_client is not None
+            assert slack_channel is not None
+            post_quiet_day(slack_client, slack_channel, target_date)
         return 0
 
-    rendered = render_raw_text(tweets)
+    corpus, included, dropped = normalize(tweets, includes)
+    _save_corpus(corpus, target_date)
+    log.info(
+        "normalized",
+        extra={
+            "stage": "normalize",
+            "posts_processed": included,
+            "posts_dropped_for_size": dropped,
+        },
+    )
+
+    fetch_summary = {
+        "accounts_fetched": len(accounts) - len(failed),
+        "accounts_failed": len(failed),
+        "posts_dropped": dropped,
+    }
+    digest = synthesize(corpus, target_date, fetch_summary, client=anthropic_client)
+    log.info(
+        "synthesized",
+        extra={"stage": "synthesize", "themes": len(digest.themes)},
+    )
 
     if args.dry_run:
-        print(rendered)
+        print(digest.model_dump_json(indent=2))
         return 0
 
-    slack_client = WebClient(token=_require_env("SLACK_BOT_TOKEN"))
-    post_plain_text(slack_client, channel=_require_env("SLACK_CHANNEL_ID"), text=rendered)
+    assert slack_client is not None
+    assert slack_channel is not None
+    post_to_slack(slack_client, slack_channel, digest, fetch_summary)
     log.info("posted to slack", extra={"stage": "deliver"})
     return 0
 
