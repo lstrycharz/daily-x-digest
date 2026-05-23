@@ -452,12 +452,18 @@ def post_to_slack(
     digest: Digest,
     fetch_summary: dict[str, int],
 ) -> None:
-    """Render the digest as Block Kit and post to Slack via chat.postMessage."""
+    """Render the digest as Block Kit and post to Slack via chat.postMessage.
+
+    Auto-unfurls are disabled — the digest already curates the relevant URLs
+    into a Links section, so Slack's preview cards would just duplicate them.
+    """
     blocks = _build_blocks(digest, fetch_summary)
     client.chat_postMessage(
         channel=channel,
         blocks=blocks,
         text=f"{digest_header_marker(digest.date)} — {digest.headline}",
+        unfurl_links=False,
+        unfurl_media=False,
     )
 
 
@@ -491,7 +497,7 @@ def post_quiet_day(client: WebClient, channel: str, date_iso: str) -> None:
         f"{digest_header_marker(date_iso)}\n"
         f"Quiet day — no top-level posts from the tracked accounts on {date_iso}."
     )
-    client.chat_postMessage(channel=channel, text=text)
+    client.chat_postMessage(channel=channel, text=text, unfurl_links=False, unfurl_media=False)
 
 
 def _build_blocks(digest: Digest, fetch_summary: dict[str, int]) -> list[dict[str, Any]]:
