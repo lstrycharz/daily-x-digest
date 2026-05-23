@@ -4,14 +4,26 @@ One deep module: fetch → normalize → synthesize → post.
 Phase 1 scope: fetch only.
 """
 
+import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, Field
+from anthropic import Anthropic
+from pydantic import BaseModel, Field, ValidationError
 from slack_sdk import WebClient
 
 SYSTEM_PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "system.md"
+
+# Approximate Sonnet 4.6 pricing per million tokens. Update if Anthropic changes them.
+ANTHROPIC_INPUT_USD_PER_MTOK = 3.0
+ANTHROPIC_OUTPUT_USD_PER_MTOK = 15.0
+
+DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
+DEFAULT_CLAUDE_MAX_TOKENS = 5000
+
+_log = logging.getLogger("x_digest")
 
 
 def load_system_prompt() -> str:
@@ -216,6 +228,113 @@ def _resolve_links_line(tweet: dict[str, Any]) -> str:
     if not expanded:
         return ""
     return "links: " + " ".join(expanded)
+
+
+def synthesize(
+    corpus: str,
+    target_date: str,
+    fetch_summary: dict[str, int],
+    client: Anthropic,
+    model: str = DEFAULT_CLAUDE_MODEL,
+    max_tokens: int = DEFAULT_CLAUDE_MAX_TOKENS,
+) -> Digest:
+    """Call Claude with the corpus and return a validated Digest.
+
+    Behaviour:
+      - stop_reason == "max_tokens" → raise (no parse-retry).
+      - JSON parse / validation failure → one retry with the error fed back.
+      - Second failure → raises the underlying error.
+      - Logs a cost-ledger record on every successful parse.
+    """
+    system_prompt = load_system_prompt()
+    user_message = _build_user_message(corpus, target_date, fetch_summary)
+
+    response = _ask(client, model, max_tokens, system_prompt, user_message)
+    try:
+        digest = _parse_digest(_response_text(response))
+        _log_cost(response, model)
+        return digest
+    except (json.JSONDecodeError, ValidationError) as err:
+        retry_message = (
+            user_message
+            + "\n\nYour previous response failed validation:\n"
+            + str(err)
+            + "\nReturn corrected strict JSON matching the schema. No code fences, no prose."
+        )
+        retry_response = _ask(client, model, max_tokens, system_prompt, retry_message)
+        digest = _parse_digest(_response_text(retry_response))
+        _log_cost(retry_response, model, retried=True)
+        return digest
+
+
+def _ask(
+    client: Anthropic,
+    model: str,
+    max_tokens: int,
+    system_prompt: str,
+    user_message: str,
+) -> Any:
+    response = client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    if response.stop_reason == "max_tokens":
+        raise RuntimeError(
+            "Claude hit max_tokens — raise CLAUDE_MAX_TOKENS or tighten the prompt"
+        )
+    return response
+
+
+def _response_text(response: Any) -> str:
+    return str(response.content[0].text)
+
+
+def _parse_digest(text: str) -> Digest:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        # Strip ```json / ``` fences.
+        cleaned = cleaned.removeprefix("```json").removeprefix("```").rstrip("` \n")
+    payload = json.loads(cleaned)
+    return Digest.model_validate(payload)
+
+
+def _build_user_message(corpus: str, target_date: str, fetch_summary: dict[str, int]) -> str:
+    notes: list[str] = []
+    failed = fetch_summary.get("accounts_failed", 0)
+    dropped = fetch_summary.get("posts_dropped", 0)
+    if failed:
+        notes.append(f"{failed} account(s) failed to fetch and were skipped.")
+    if dropped:
+        notes.append(f"{dropped} low-engagement post(s) were dropped to fit the size budget.")
+    notes_str = ("\n" + "\n".join(notes)) if notes else ""
+    return (
+        f"Target date: {target_date}\n"
+        f"Posts follow, separated by `---` lines.{notes_str}\n\n"
+        f"{corpus}"
+    )
+
+
+def _log_cost(response: Any, model: str, retried: bool = False) -> None:
+    usage = response.usage
+    in_tokens = int(usage.input_tokens)
+    out_tokens = int(usage.output_tokens)
+    cost = (
+        in_tokens / 1_000_000 * ANTHROPIC_INPUT_USD_PER_MTOK
+        + out_tokens / 1_000_000 * ANTHROPIC_OUTPUT_USD_PER_MTOK
+    )
+    _log.info(
+        "synthesize complete",
+        extra={
+            "stage": "synthesize",
+            "anthropic_model": model,
+            "anthropic_input_tokens": in_tokens,
+            "anthropic_output_tokens": out_tokens,
+            "anthropic_cost_usd_estimate": round(cost, 4),
+            "retried": retried,
+        },
+    )
 
 
 def render_raw_text(tweets: list[dict[str, Any]]) -> str:

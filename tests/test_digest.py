@@ -1,3 +1,4 @@
+import json
 from unittest.mock import Mock
 
 import httpx
@@ -14,6 +15,7 @@ from x_digest.digest import (
     normalize,
     post_plain_text,
     render_raw_text,
+    synthesize,
 )
 
 
@@ -314,3 +316,112 @@ def test_normalize_drops_lowest_engagement_posts_when_over_token_cap() -> None:
     assert dropped == 1
     assert "x" * 100 in corpus  # high-engagement body present
     assert "y" * 100 not in corpus  # low-engagement body dropped
+
+
+_VALID_DIGEST_JSON = json.dumps(_minimal_digest_payload())
+
+
+def _mock_anthropic_message(
+    text: str, stop_reason: str = "end_turn", in_tokens: int = 100, out_tokens: int = 100
+) -> Mock:
+    msg = Mock()
+    msg.content = [Mock(text=text)]
+    msg.stop_reason = stop_reason
+    msg.usage = Mock(input_tokens=in_tokens, output_tokens=out_tokens)
+    return msg
+
+
+def test_synthesize_returns_validated_digest_on_clean_json() -> None:
+    client = Mock()
+    client.messages.create.return_value = _mock_anthropic_message(_VALID_DIGEST_JSON)
+    digest = synthesize(
+        corpus="some corpus",
+        target_date="2026-05-22",
+        fetch_summary={"accounts_failed": 0, "posts_dropped": 0},
+        client=client,
+    )
+    assert isinstance(digest, Digest)
+    assert digest.headline == "Sample headline"
+    client.messages.create.assert_called_once()
+
+
+def test_synthesize_strips_code_fences_before_parsing() -> None:
+    fenced = f"```json\n{_VALID_DIGEST_JSON}\n```"
+    client = Mock()
+    client.messages.create.return_value = _mock_anthropic_message(fenced)
+    digest = synthesize(
+        corpus="x",
+        target_date="2026-05-22",
+        fetch_summary={"accounts_failed": 0, "posts_dropped": 0},
+        client=client,
+    )
+    assert digest.headline == "Sample headline"
+
+
+def test_synthesize_raises_on_max_tokens_without_retry() -> None:
+    client = Mock()
+    client.messages.create.return_value = _mock_anthropic_message(
+        "{partial json", stop_reason="max_tokens"
+    )
+    with pytest.raises(RuntimeError, match="max_tokens"):
+        synthesize(
+            corpus="x",
+            target_date="2026-05-22",
+            fetch_summary={"accounts_failed": 0, "posts_dropped": 0},
+            client=client,
+        )
+    assert client.messages.create.call_count == 1  # no retry
+
+
+def test_synthesize_retries_once_on_malformed_json_then_succeeds() -> None:
+    client = Mock()
+    client.messages.create.side_effect = [
+        _mock_anthropic_message("definitely not json"),
+        _mock_anthropic_message(_VALID_DIGEST_JSON),
+    ]
+    digest = synthesize(
+        corpus="x",
+        target_date="2026-05-22",
+        fetch_summary={"accounts_failed": 0, "posts_dropped": 0},
+        client=client,
+    )
+    assert digest.headline == "Sample headline"
+    assert client.messages.create.call_count == 2
+
+
+def test_synthesize_raises_when_retry_also_fails() -> None:
+    client = Mock()
+    client.messages.create.side_effect = [
+        _mock_anthropic_message("not json #1"),
+        _mock_anthropic_message("still not json #2"),
+    ]
+    with pytest.raises((json.JSONDecodeError, ValidationError)):
+        synthesize(
+            corpus="x",
+            target_date="2026-05-22",
+            fetch_summary={"accounts_failed": 0, "posts_dropped": 0},
+            client=client,
+        )
+    assert client.messages.create.call_count == 2
+
+
+def test_synthesize_logs_cost_ledger(caplog: pytest.LogCaptureFixture) -> None:
+    client = Mock()
+    client.messages.create.return_value = _mock_anthropic_message(
+        _VALID_DIGEST_JSON, in_tokens=42100, out_tokens=1850
+    )
+    with caplog.at_level("INFO", logger="x_digest"):
+        synthesize(
+            corpus="x",
+            target_date="2026-05-22",
+            fetch_summary={"accounts_failed": 0, "posts_dropped": 0},
+            client=client,
+        )
+    cost_records = [
+        r for r in caplog.records if getattr(r, "anthropic_input_tokens", None) == 42100
+    ]
+    assert cost_records, "expected a log record carrying the cost ledger fields"
+    record = cost_records[0]
+    assert record.anthropic_output_tokens == 1850  # type: ignore[attr-defined]
+    assert isinstance(record.anthropic_cost_usd_estimate, float)  # type: ignore[attr-defined]
+    assert record.anthropic_cost_usd_estimate > 0  # type: ignore[attr-defined]
