@@ -1,157 +1,234 @@
-# X Daily Digest
+# Daily X (Twitter) Digest
 
-Scheduled agent that fetches yesterday's top-level posts from a curated set of X (Twitter) accounts, synthesizes them with Claude Sonnet 4.6 into a themed editorial digest, and posts the result to a Slack channel around 7 AM ET. Fully autonomous: no human approval gates, no state file, no maintenance after setup beyond editing `accounts.json` when you want to follow new accounts.
+A little robot that reads X for you so you don't have to.
 
-> **The repo must be private.** `accounts.json` reveals the curated set of accounts you follow as signal — that's personal data worth not leaking.
-
----
-
-## Architecture (one paragraph)
-
-Four-stage sequential pipeline triggered by GitHub Actions cron. `fetch_all` calls `GET /2/users/:id/tweets` per account (server-side `exclude=replies,retweets`, no `author_id` expansion to keep X API costs down). `normalize` dedupes, sorts, resolves quoted-tweet text from `includes`, prefers `note_tweet.text` for long posts, expands `t.co` URLs, and enforces a soft 120k-token corpus cap by dropping the lowest-engagement posts. `synthesize` calls Claude Sonnet 4.6 with a strict-JSON output contract, retries once on a parse failure with the validation error fed back, and raises immediately on `stop_reason="max_tokens"`. `post_to_slack` renders the validated `Digest` into Block Kit. Idempotency comes from a `conversations.history` lookup — no state file, no GH Actions artifact. Failure alerts live in the workflow's `if: failure()` step, not in the module. See [docs/build-spec.md](docs/build-spec.md) if it exists, or the project's plan file under `~/.claude/plans/`.
+Every morning around 7 AM Eastern, it reads everything yesterday's chosen X accounts posted, asks Claude (an AI) to write a short summary, and posts that summary to a Slack channel. You stop scrolling X. The robot does it for you. You read the part worth reading — usually under 90 seconds.
 
 ---
 
-## Setup
+## What one day's digest looks like
 
-### 1. X (Twitter) API access
+```
+📰 X Daily Digest — 2026-05-22 — FTC settles "active listening" ad fraud case
 
-Create a project in the [X Developer Console](https://developer.x.com) and grab an **app-only bearer token**. The endpoint used (`GET /2/users/:id/tweets`) is available on the current pay-per-use plan. No OAuth user-context flow is needed.
+"Active listening" ad targeting was always a vendor lie
+FTC fined Cox Media Group ~$1M for selling a microphone-based
+ad-targeting AI that didn't exist — fraud against advertisers, not
+surveillance of consumers. @simonw called this in Sep 2024.
 
-### 2. Anthropic API access
+Quick hits
+• @karpathy: short note on new model release
+• @gregisenberg: founder advice thread worth a read
 
-Get a key at [console.anthropic.com](https://console.anthropic.com). The model defaults to `claude-sonnet-4-6`; you can override via `CLAUDE_MODEL`.
-
-### 3. Slack app
-
-Create a [new Slack app](https://api.slack.com/apps) and add a **Bot User** with these OAuth scopes:
-
-- `chat:write` — to post the digest.
-- `channels:history` (public channel) **or** `groups:history` (private channel) — for the idempotency check.
-
-Install the app to your workspace and copy the **Bot User OAuth Token** (`xoxb-…`). Invite the bot to the target channel: `/invite @your-bot-name`.
-
-Separately, create a Slack [**Incoming Webhook**](https://api.slack.com/messaging/webhooks) pointing at the same channel (or a different "alerts" channel). This is the URL the GitHub Actions workflow uses to post failure alerts — decoupled from the bot token so the bot isn't a single point of failure.
-
-### 4. GitHub repository secrets
-
-In the repo's **Settings → Secrets and variables → Actions**, add:
-
-| Secret | Source |
-|---|---|
-| `X_BEARER_TOKEN` | step 1 |
-| `ANTHROPIC_API_KEY` | step 2 |
-| `SLACK_BOT_TOKEN` | step 3 (the `xoxb-…` token) |
-| `SLACK_CHANNEL_ID` | the channel ID (right-click channel → "View channel details" → bottom) |
-| `SLACK_FAILURE_WEBHOOK` | step 3 (the incoming webhook URL) |
-
-### 5. Local development setup
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
-cp .env.example .env
-# edit .env with the same values as above (Slack creds optional if you only --dry-run)
+3/3 accounts
 ```
 
-### 6. Curate accounts.json and resolve user_ids
+Each handle is clickable — tap it to jump to the original post on X if you want the full thread.
 
-Edit `accounts.json` to list the handles you want to follow. Then run the resolver to fill in `user_id`s:
+---
+
+## Why it exists
+
+X is good for catching signal, bad for spending an hour scrolling. This reverses the ratio: a few minutes of reading, no scrolling.
+
+---
+
+## How it works (in four steps)
+
+Every morning, four things happen automatically:
+
+1. **It fetches yesterday's posts** from the X accounts you chose, ignoring replies and retweets.
+2. **It cleans them up** — drops duplicates, expands shortened links, fits everything into a single page of text.
+3. **It asks Claude to summarize** — Claude reads everything and writes a short editorial digest with themes and links back to the original posts.
+4. **It posts to Slack** — the digest lands in your chosen channel, ready to read with coffee.
+
+If anything breaks, it sends a separate short note to a "failure alerts" channel so you know to check on it. Otherwise you'll never need to touch it.
+
+---
+
+## What it costs
+
+For ~50 accounts on a typical news day, expect about **$0.20–$0.50 per run** from the AI summary call — roughly **$6–$15 a month**. X and Slack are free at this volume.
+
+Every run logs a "cost ledger" line with the exact token count and estimated dollar cost so you can watch it.
+
+---
+
+## Setting up your own copy
+
+This part assumes you can run a few commands in a terminal. If `pip`, `bash`, and "environment variables" mean nothing to you, the rest of this page won't be useful — but the result is a fully automatic morning digest, so it's worth finding a friend who can help.
+
+### What you need first
+
+- A free [X Developer account](https://developer.x.com) (for reading tweets).
+- A free [Anthropic account](https://console.anthropic.com) (for the Claude summaries — pay-as-you-go, around $6–15/month at this scale).
+- A Slack workspace you control (for the daily post).
+- Python 3.11 or newer on your computer.
+- A free GitHub account (GitHub runs the daily timer for you).
+
+### Step 1 — Clone this repo
+
+```bash
+git clone https://github.com/<your-username>/<your-fork>.git
+cd <your-fork>
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+```
+
+### Step 2 — Get the secret keys
+
+In the X developer dashboard, create a project and copy the **Bearer Token**. It's a long string starting with `AAAA…`.
+
+In the Anthropic console, create a key. It starts with `sk-ant-…`.
+
+In Slack, you need to make a small app:
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From a manifest** → pick your workspace.
+2. Paste this YAML into the manifest box:
+
+   ```yaml
+   display_information:
+     name: X Daily Digest
+   features:
+     bot_user:
+       display_name: X Daily Digest
+       always_online: true
+   oauth_config:
+     scopes:
+       bot:
+         - chat:write
+         - channels:history
+         - groups:history
+         - incoming-webhook
+   settings:
+     org_deploy_enabled: false
+     socket_mode_enabled: false
+     token_rotation_enabled: false
+   ```
+
+3. **Create** → **Install to Workspace** → pick the channel where you want failure alerts → **Allow**.
+4. Now grab two things from the app's settings:
+   - **OAuth & Permissions** page → copy the **Bot User OAuth Token** (starts with `xoxb-…`).
+   - **Incoming Webhooks** page → copy the listed **Webhook URL** (starts with `https://hooks.slack.com/…`).
+5. Invite the bot to whichever channel you want the daily digest posted in: type `/invite @X Daily Digest` in that channel.
+
+Get the channel ID for the digest channel: right-click the channel name → **View channel details** → scroll to the bottom — it's a string like `C0123ABC456`.
+
+### Step 3 — Put the keys in a local file
+
+Copy the example file and fill in your real values:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` with any text editor. You'll fill in five values:
+
+| Variable | Where it came from |
+|---|---|
+| `X_BEARER_TOKEN` | X developer dashboard |
+| `ANTHROPIC_API_KEY` | Anthropic console |
+| `SLACK_BOT_TOKEN` | Slack app → OAuth & Permissions |
+| `SLACK_CHANNEL_ID` | The digest channel's ID (the `C…` string) |
+
+Keep this file. Never commit it. (It's already in `.gitignore`.)
+
+### Step 4 — Choose which X accounts to follow
+
+Edit `accounts.json` — it's a list of X handles you want the daily digest to cover. Start with 5–10; you can grow to 50.
+
+Then run a one-time command to look up X's internal ID for each handle:
 
 ```bash
 export $(grep -v '^#' .env | xargs)
 .venv/bin/python -m x_digest resolve-ids
 ```
 
-Re-run it any time you add new handles. Suspended/renamed handles are logged as warnings; the rest get resolved.
+If any account is spelled wrong or no longer exists, it'll be skipped with a warning — you can fix and re-run.
 
----
+### Step 5 — Try it locally first
 
-## Running
-
-### Local dry-run
+A "dry run" exercises everything — it actually reads X and asks Claude for a summary, but only prints the result to your screen. No Slack post, no risk of spam.
 
 ```bash
 .venv/bin/python -m x_digest --force --dry-run
 ```
 
-Runs the full pipeline (including Claude synthesis) against live X + Anthropic APIs, but prints the validated `Digest` as JSON to stdout instead of posting to Slack. Useful for prompt iteration. The normalized corpus is saved to `runs/{date}.txt` (gitignored) so you can re-run synthesis with a different prompt without re-paying the X API.
+You should see a few log lines, then a JSON summary of yesterday's posts. Costs about a penny in Claude tokens.
 
-Limit to one handle for cheaper tests:
+When that looks good, run it for real:
 
 ```bash
-.venv/bin/python -m x_digest --force --dry-run --account karpathy
+.venv/bin/python -m x_digest --force
 ```
 
-### Production
+The digest should appear in your Slack channel within ~15 seconds.
 
-Push to the configured branch. The GitHub Actions cron at 11:00 and 12:00 UTC fires the workflow; the `{7, 8}`-hour ET gate and Slack-history idempotency check together ensure exactly one run per day. You don't need to do anything else.
+### Step 6 — Hand it off to GitHub for the daily timer
 
-To force a manual run, use **Actions → X Daily Digest → Run workflow**. The hour gate still applies, so the manual run only proceeds during 7 or 8 AM ET. For off-hour testing, run locally with `--force`.
+So far you've been running this manually. The point is that GitHub does it for you every morning.
 
----
+1. Push this repo to GitHub:
+   ```bash
+   git remote add origin <your-private-repo-url>
+   git push -u origin master
+   ```
 
-## Configuration
+2. In the GitHub repo's **Settings → Secrets and variables → Actions**, add five secrets:
 
-### Environment variables
+   | Secret name | Value |
+   |---|---|
+   | `X_BEARER_TOKEN` | from Step 2 |
+   | `ANTHROPIC_API_KEY` | from Step 2 |
+   | `SLACK_BOT_TOKEN` | from Step 2 |
+   | `SLACK_CHANNEL_ID` | from Step 2 |
+   | `SLACK_FAILURE_WEBHOOK` | from Step 2 |
 
-| Variable | Required | Default |
-|---|---|---|
-| `X_BEARER_TOKEN` | yes | — |
-| `ANTHROPIC_API_KEY` | yes | — |
-| `SLACK_BOT_TOKEN` | yes (except `--dry-run`) | — |
-| `SLACK_CHANNEL_ID` | yes (except `--dry-run`) | — |
-| `CLAUDE_MODEL` | no | `claude-sonnet-4-6` |
-| `DIGEST_TIMEZONE` | no | `America/New_York` |
-| `LOG_LEVEL` | no | `INFO` |
+3. Go to **Actions → X Daily Digest → Run workflow** during 7–8 AM ET. The digest should appear in Slack. (Outside that window the workflow exits without posting — the daily schedule will catch it the next morning.)
 
-Everything else (corpus token cap, max output tokens, fail-ratio threshold, allowed hours) lives as a module-level constant in `src/x_digest/digest.py`. Tune in code if you need to.
-
-### accounts.json
-
-Hand-curated. JSON array of `{handle, user_id}` objects. The resolver fills in `user_id`s; you only ever touch `handle`. Suspended/renamed handles get warned about and skipped on the next resolve.
+That's it. From here on, every morning at 7 AM ET the timer fires and the digest lands in Slack.
 
 ---
 
-## Operations
+## When things go wrong
 
-### Cost envelope
+The robot is designed to fail loudly:
 
-Each run costs roughly `(corpus_tokens × $3/M) + (output_tokens × $15/M)` on Sonnet 4.6, plus the per-call X API charges (varies by plan). A 4-post day was ~$0.012 in synthesis cost in early testing. With ~50 accounts and a typical 100–300 posts a day, expect roughly `$0.10–$0.50/run`, or `$3–$15/month`. **Watch actual numbers in the cost-ledger log lines for the first week** and revisit if surprising.
+- If anything breaks (X is down, Anthropic rejects the key, Slack is unreachable), an alert message lands in your "failure alerts" channel with a link to the failing run.
+- If you run it twice in the same day it won't double-post — it checks Slack first to see if today's digest already exists.
 
-### Logs
+Common things to check first when the failure alert fires:
 
-Every external call and the final run summary emit a structured JSON log line to stdout. GH Actions captures them in the workflow run output. Useful fields: `accounts_fetched`, `accounts_failed`, `failed_handles`, `posts_processed`, `posts_dropped_for_size`, `themes`, `anthropic_input_tokens`, `anthropic_output_tokens`, `anthropic_cost_usd_estimate`.
-
-### Failure alerts
-
-Any non-zero exit triggers the workflow's `if: failure()` step, which posts to `SLACK_FAILURE_WEBHOOK` with a link to the failing run. The pipeline itself never posts failure messages — that path moved out of the module.
-
-The expected failure modes and what they mean:
-
-| Symptom in the alert / log | Likely cause |
+| Alert hint | Likely cause |
 |---|---|
-| `RuntimeError: X API auth rejected` | `X_BEARER_TOKEN` expired or wrong. |
-| `RuntimeError: Claude hit max_tokens` | Output didn't fit; raise `DEFAULT_CLAUDE_MAX_TOKENS` or tighten the prompt. |
-| `RuntimeError: N/M accounts failed` | Systemic problem (rate limits, outage). Inspect the `failed_handles` field. |
-| `ValidationError` propagating from `synthesize` | Two consecutive bad JSON responses. Inspect the corpus in `runs/{date}.txt`, then iterate on the prompt. |
-| Job missed for a day | GH Actions outage. Out of scope by design — the next day's run resumes normally. |
-
-### Things to verify periodically
-
-- The X API endpoint, `exclude` parameter, and billing categories haven't changed.
-- Slack Block Kit limits (~3000 chars / section, ~50 blocks / message) haven't tightened.
-- Anthropic's pricing constants in `digest.py` (`ANTHROPIC_INPUT_USD_PER_MTOK`, `ANTHROPIC_OUTPUT_USD_PER_MTOK`) still match your billing.
-- `CLAUDE_MODEL` is still the latest Sonnet variant if you want the newest model.
+| `auth rejected` | One of your tokens expired or was changed. |
+| `accounts failed` | X is rate-limiting or a chunk of handles got suspended. Look at the run log for which ones. |
+| `Slack 404` or `channel_not_found` | The bot isn't a member of the digest channel. Re-invite it. |
+| `Claude hit max_tokens` | One day's volume was unusually huge. Rarely happens; if it does, edit `DEFAULT_CLAUDE_MAX_TOKENS` upward in `src/x_digest/digest.py`. |
 
 ---
 
-## Development
+## Privacy note
+
+If you publish this repo publicly, **`accounts.json` reveals which X accounts you follow as signal**. For most people that's harmless — but if your list grows to reveal personal interests, professional rivals, or anything else you'd rather not advertise, move the file out of the repo (gitignore it) and store its content as a GitHub Actions secret instead. Ask if you want help with that change.
+
+---
+
+## For developers — quick reference
 
 ```bash
-.venv/bin/pytest              # unit tests
-.venv/bin/mypy src/           # type check (--strict)
-.venv/bin/ruff check src/ tests/   # lint
+.venv/bin/pytest                  # unit tests
+.venv/bin/mypy --strict src/      # type check
+.venv/bin/ruff check src/ tests/  # lint
+.venv/bin/python -m x_digest --force --dry-run     # full pipeline, no Slack post
+.venv/bin/python -m x_digest --force --dry-run --account <handle>   # one-account preview
+.venv/bin/python -m x_digest resolve-ids           # populate user_ids from handles
 ```
 
-Strict TDD: every behaviour gets a failing test before the implementation. Three source files (`digest.py`, `time_utils.py`, `__main__.py`); one deep module by design. See `.claude/CLAUDE.md` for the project-specific rules.
+Three source files: `digest.py` (the pipeline), `time_utils.py` (date math), `__main__.py` (CLI + logging + config). Strict TDD; one deep module by design. See `.claude/CLAUDE.md` for project rules.
+
+---
+
+## License & credits
+
+Built by [Lukasz Strycharz](https://github.com/lukaszstrycharz) with [Claude Code](https://claude.com/claude-code). Use this freely; no warranty.
