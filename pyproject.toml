@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "x-digest"
+version = "0.1.0"
+description = "Scheduled X (Twitter) -> Claude -> Slack daily digest."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "httpx==0.28.1",
+    "anthropic==0.104.1",
+    "slack-sdk==3.42.0",
+    "pydantic==2.13.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.0.3",
+    "respx==0.23.1",
+    "ruff==0.15.14",
+    "mypy==2.1.0",
+]
+
+[project.scripts]
+x-digest = "x_digest.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+files = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]

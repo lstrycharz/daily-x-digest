@@ -1,0 +1,76 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials.json
+service-account*.json
+secrets/
+.secrets
+*-secret.yaml
+*-secret.json
+
+# Auth tokens and registry configs
+.npmrc
+.pypirc
+.docker/config.json
+.yarnrc.yml
+
+# Cloud and infra credentials
+.aws/
+.gcloud/
+terraform.tfvars
+terraform.tfvars.json
+*.tfstate
+*.tfstate.*
+.terraform/
+kubeconfig
+*.kubeconfig
+
+# Dependencies
+node_modules/
+.pnpm-store/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.uv/
+
+# Build output
+dist/
+build/
+.next/
+out/
+*.egg-info/
+
+# IDE and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test and coverage
+coverage/
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.nyc_output/
+
+# X Daily Digest run artifacts
+runs/
+
+# Logs
+*.log
+logs/
+
+# Docker
+.docker/
