@@ -154,7 +154,11 @@ def main(argv: list[str] | None = None) -> int:
         return _resolve_ids_command(raw_argv[1:])
 
     parser = argparse.ArgumentParser(prog="x-digest", description="X Daily Digest")
-    parser.add_argument("--force", action="store_true", help="skip the hour gate")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="skip the hour gate (idempotency still applies — use --dry-run to test)",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -185,7 +189,9 @@ def main(argv: list[str] | None = None) -> int:
     start_iso, end_iso = previous_day_window(now_utc, tz_name)
     target_date = _target_date_iso(start_iso)
 
-    if not args.force and not args.dry_run:
+    # Idempotency check applies even with --force; --force only skips the hour gate.
+    # --dry-run skips the check because we don't query Slack at all in that mode.
+    if not args.dry_run:
         assert slack_client is not None
         assert slack_channel is not None
         if already_posted_today(slack_client, slack_channel, target_date):
