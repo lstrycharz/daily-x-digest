@@ -1,0 +1,47 @@
+name: X Daily Digest
+
+on:
+  schedule:
+    # Two UTC fires per day. The {7,8}-hour ET gate in time_utils.should_run
+    # plus the Slack-history idempotency check keep exactly one run per day:
+    #   EDT (Mar-Nov): 11:00 UTC = 07:00 ET (runs), 12:00 UTC = 08:00 ET (idempotent skip).
+    #   EST (Nov-Mar): 11:00 UTC = 06:00 ET (gate skip), 12:00 UTC = 07:00 ET (runs).
+    - cron: "0 11 * * *"
+    - cron: "0 12 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Run digest
+        env:
+          X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+        run: python -m x_digest
+
+      - name: Notify on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          webhook-url: ${{ secrets.SLACK_FAILURE_WEBHOOK }}
+          payload: |
+            {
+              "text": "X Daily Digest failed — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }
