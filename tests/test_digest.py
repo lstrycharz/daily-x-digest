@@ -142,6 +142,66 @@ def test_fetch_all_isolates_single_account_failure_and_continues() -> None:
     assert failed == ["missing_user"]
 
 
+@respx.mock
+def test_fetch_all_retries_after_429_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("x_digest.digest.time.sleep", lambda _seconds: None)
+    respx.get("https://api.x.com/2/users/123/tweets").mock(
+        side_effect=[
+            httpx.Response(429, json={"title": "Too Many Requests"}),
+            httpx.Response(200, json={"data": [{"id": "1"}]}),
+        ]
+    )
+    accounts = [{"handle": "rate_limited", "user_id": "123"}]
+    tweets, _, failed = fetch_all(
+        accounts,
+        start_iso="2026-05-22T04:00:00Z",
+        end_iso="2026-05-23T04:00:00Z",
+        bearer_token="fake-token",
+    )
+    assert [t["id"] for t in tweets] == ["1"]
+    assert failed == []
+
+
+@respx.mock
+def test_fetch_all_aborts_pipeline_on_401_without_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("x_digest.digest.time.sleep", lambda _seconds: None)
+    route = respx.get("https://api.x.com/2/users/123/tweets").mock(
+        return_value=httpx.Response(401, json={"title": "Unauthorized"})
+    )
+    accounts = [{"handle": "any", "user_id": "123"}]
+    with pytest.raises(RuntimeError, match="auth"):
+        fetch_all(
+            accounts,
+            start_iso="2026-05-22T04:00:00Z",
+            end_iso="2026-05-23T04:00:00Z",
+            bearer_token="bad-token",
+        )
+    # 401 must NOT retry — exactly one call.
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_fetch_all_raises_when_failure_ratio_exceeds_threshold() -> None:
+    # 2 of 3 accounts return 404 = 66% failed > 50% threshold.
+    respx.get("https://api.x.com/2/users/a/tweets").mock(return_value=httpx.Response(404))
+    respx.get("https://api.x.com/2/users/b/tweets").mock(return_value=httpx.Response(404))
+    respx.get("https://api.x.com/2/users/c/tweets").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "1"}]})
+    )
+    accounts = [
+        {"handle": "a", "user_id": "a"},
+        {"handle": "b", "user_id": "b"},
+        {"handle": "c", "user_id": "c"},
+    ]
+    with pytest.raises(RuntimeError, match="accounts failed"):
+        fetch_all(
+            accounts,
+            start_iso="2026-05-22T04:00:00Z",
+            end_iso="2026-05-23T04:00:00Z",
+            bearer_token="fake-token",
+        )
+
+
 def test_render_raw_text_formats_each_tweet_with_handle_and_url() -> None:
     # Phase 1 plain-text renderer. The themed Block Kit layout comes in Phase 2.
     tweets = [

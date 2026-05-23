@@ -6,6 +6,7 @@ Phase 1 scope: fetch only.
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,11 @@ MAX_CORPUS_TOKENS = 120_000
 QUOTE_TRUNCATE_CHARS = 280
 CHARS_PER_TOKEN_ESTIMATE = 4
 
+RETRY_MAX_ATTEMPTS = 3
+BACKOFF_BASE_SECONDS = 1.0
+BACKOFF_CAP_SECONDS = 30.0
+FAIL_RATIO_THRESHOLD = 0.5
+
 
 def fetch_all(
     accounts: list[dict[str, str]],
@@ -103,6 +109,8 @@ def fetch_all(
                     client, account["user_id"], start_iso, end_iso
                 )
             except httpx.HTTPError:
+                # 401 is raised as RuntimeError below and does NOT land here — those are
+                # transient/per-account failures (404, 5xx after retry exhaustion, etc).
                 failed.append(handle)
                 continue
             for t in page_tweets:
@@ -110,6 +118,12 @@ def fetch_all(
             tweets.extend(page_tweets)
             for inc in page_includes:
                 includes_tweets[inc["id"]] = inc
+
+    if accounts and len(failed) / len(accounts) > FAIL_RATIO_THRESHOLD:
+        raise RuntimeError(
+            f"{len(failed)}/{len(accounts)} accounts failed — aborting (threshold "
+            f"{FAIL_RATIO_THRESHOLD:.0%})"
+        )
 
     return tweets, includes_tweets, failed
 
@@ -131,8 +145,7 @@ def _fetch_one_account(
         "expansions": EXPANSIONS,
     }
     while True:
-        response = client.get(f"{X_API_BASE}/users/{user_id}/tweets", params=params)
-        response.raise_for_status()
+        response = _request_with_retry(client, f"{X_API_BASE}/users/{user_id}/tweets", params)
         body = response.json()
         tweets.extend(body.get("data", []))
         includes.extend(body.get("includes", {}).get("tweets", []))
@@ -140,6 +153,59 @@ def _fetch_one_account(
         if not next_token:
             return tweets, includes
         params["pagination_token"] = next_token
+
+
+def _request_with_retry(
+    client: httpx.Client,
+    url: str,
+    params: dict[str, str | int],
+) -> httpx.Response:
+    """GET with exponential-backoff retry on 429 and 5xx and network errors.
+
+    401 is raised immediately as a RuntimeError — it affects all accounts and
+    must not be isolated as a single-account failure. Other 4xx surface as
+    HTTPStatusError so the caller's per-account catch path can record them.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(RETRY_MAX_ATTEMPTS):
+        try:
+            response = client.get(url, params=params)
+        except httpx.RequestError as exc:
+            last_exc = exc
+            if attempt < RETRY_MAX_ATTEMPTS - 1:
+                time.sleep(_backoff_seconds(attempt))
+                continue
+            raise
+
+        if response.status_code == 401:
+            raise RuntimeError("X API auth rejected — check X_BEARER_TOKEN")
+        if response.status_code == 429 or response.status_code >= 500:
+            if attempt < RETRY_MAX_ATTEMPTS - 1:
+                time.sleep(_retry_sleep_seconds(response, attempt))
+                continue
+            response.raise_for_status()  # exhausted → caller treats as per-account failure
+        response.raise_for_status()  # other 4xx → caller handles as per-account failure
+        return response
+
+    # Should be unreachable, but for the type checker.
+    raise last_exc or RuntimeError("retry loop exited without returning")
+
+
+def _backoff_seconds(attempt: int) -> float:
+    return float(min(BACKOFF_BASE_SECONDS * (2**attempt), BACKOFF_CAP_SECONDS))
+
+
+def _retry_sleep_seconds(response: httpx.Response, attempt: int) -> float:
+    """Honor `x-rate-limit-reset` on 429 if present; otherwise exponential backoff."""
+    reset_raw = response.headers.get("x-rate-limit-reset")
+    if reset_raw and response.status_code == 429:
+        try:
+            reset_at = int(reset_raw)
+        except ValueError:
+            return _backoff_seconds(attempt)
+        delta: float = max(0.0, reset_at - time.time())
+        return min(delta, BACKOFF_CAP_SECONDS)
+    return _backoff_seconds(attempt)
 
 
 def normalize(

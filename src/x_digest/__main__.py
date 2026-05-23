@@ -52,6 +52,8 @@ def _configure_logging() -> None:
     root = logging.getLogger()
     root.handlers = [handler]
     root.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
+    # httpx logs every request URL at INFO — useful at debug but noisy in production.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def _load_accounts(only_handle: str | None) -> list[dict[str, str]]:
