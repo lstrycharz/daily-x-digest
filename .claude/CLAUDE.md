@@ -19,17 +19,39 @@ Run the full test suite to orient yourself on project scope and current state. D
 6. Begin work — do not re-implement anything marked as Completed
 
 ## Tech Stack
-<!-- Auto-populated from first plan mode session -->
+Python 3.11+ · `httpx` (sync) · `anthropic` SDK · `slack-sdk` · `pydantic` v2 · stdlib `logging` with a JSON formatter · `respx` (httpx mocks in tests). Three source files: `digest.py` (the pipeline), `time_utils.py` (date math), `__main__.py` (CLI + config + logging setup). Deployed via GitHub Actions cron. Failure alerts handled by the workflow's `if: failure()` step, not by the module.
 
 ## Commands
-<!-- Auto-populated from first plan mode session -->
+- Create venv: `python3 -m venv .venv`
+- Install: `.venv/bin/pip install -e ".[dev]"`
+- Test: `.venv/bin/pytest`
+- Lint: `.venv/bin/ruff check src/ tests/`
+- Type check: `.venv/bin/mypy src/`
+- Run dry: `.venv/bin/python -m x_digest --force --dry-run`
+- Run dry against one account: `.venv/bin/python -m x_digest --force --dry-run --account <handle>`
 
 ## Project Structure
-<!-- Auto-populated from first plan mode session -->
+```
+src/x_digest/
+  digest.py        # the whole pipeline: fetch → normalize → synthesize → post
+  time_utils.py    # previous_day_window() + should_run()
+  __main__.py      # CLI + config + JSON logging setup
+tests/
+  test_time_utils.py
+  test_digest.py
+accounts.json      # curated accounts: [{handle, user_id}, ...]
+prompts/system.md  # Claude system prompt (added in Phase 2)
+.github/workflows/daily-digest.yml  # cron + if:failure alert (added in Phase 3)
+```
 
 ## Rules
-<!-- Auto-populated from first plan mode session. Keep only what's unique to THIS project. -->
-<!-- Universal rules (TDD, security, code style) are in global ~/.claude/rules/ -->
+- `time_utils` functions take `now_utc` as a parameter — never call `datetime.now()` inside them.
+- Never request `expansions=author_id` for main tweets — handles come from `accounts.json` (cost control).
+- A single account's fetch failure must never abort the run.
+- The summarizer's JSON output is untrusted — validate against the `Digest` schema before rendering (Phase 2).
+- Sync `httpx` only. No `pytest-asyncio`.
+- `digest.py` is one deep module on purpose. Don't split it.
+- Failure alerts live in the workflow (`if: failure()` → `SLACK_FAILURE_WEBHOOK`), never inside `digest.py`.
 
 ## Definition of Done
 - Tests written before implementation (red/green/refactor cycle)
@@ -41,7 +63,11 @@ Run the full test suite to orient yourself on project scope and current state. D
 - Works locally end-to-end before pushing
 
 ## Common Gotchas
-<!-- Add project-specific landmines here as you discover them -->
+- DST: ET ↔ UTC offset changes twice a year. Always use `zoneinfo`, never a fixed offset.
+- The dual-cron at 11:00 + 12:00 UTC relies on the {7,8}-hour gate + Slack-history idempotency check — don't "fix" it to a single cron without restoring those guards.
+- Long X posts: the real text lives in `note_tweet.text`, not `text` (Phase 2 normalization).
+- Quoted-tweet source can be missing from `includes.tweets` (deleted/suspended) — render the parent without the quote, not as a hard fail.
+- Claude `stop_reason="max_tokens"` is not a parse failure — it's a "raise the max_tokens constant" signal (Phase 2 synthesizer).
 
 ## Core Principles
 - **Simplicity First**: Make every change as simple as possible. Impact minimal code.
