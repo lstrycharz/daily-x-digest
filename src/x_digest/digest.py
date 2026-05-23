@@ -23,6 +23,14 @@ ANTHROPIC_OUTPUT_USD_PER_MTOK = 15.0
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
 DEFAULT_CLAUDE_MAX_TOKENS = 5000
 
+SLACK_SECTION_TEXT_MAX = 3000
+DIGEST_HEADER_PREFIX = "📰 X Daily Digest"
+
+
+def digest_header_marker(date_iso: str) -> str:
+    """Stable header prefix used both for rendering and the Phase 3 idempotency check."""
+    return f"{DIGEST_HEADER_PREFIX} — {date_iso}"
+
 _log = logging.getLogger("x_digest")
 
 
@@ -335,6 +343,96 @@ def _log_cost(response: Any, model: str, retried: bool = False) -> None:
             "retried": retried,
         },
     )
+
+
+def post_to_slack(
+    client: WebClient,
+    channel: str,
+    digest: Digest,
+    fetch_summary: dict[str, int],
+) -> None:
+    """Render the digest as Block Kit and post to Slack via chat.postMessage."""
+    blocks = _build_blocks(digest, fetch_summary)
+    client.chat_postMessage(
+        channel=channel,
+        blocks=blocks,
+        text=f"{digest_header_marker(digest.date)} — {digest.headline}",
+    )
+
+
+def post_quiet_day(client: WebClient, channel: str, date_iso: str) -> None:
+    """Post the one-line message used when no posts were found in the window."""
+    text = (
+        f"{digest_header_marker(date_iso)}\n"
+        f"Quiet day — no top-level posts from the tracked accounts on {date_iso}."
+    )
+    client.chat_postMessage(channel=channel, text=text)
+
+
+def _build_blocks(digest: Digest, fetch_summary: dict[str, int]) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": f"{digest_header_marker(digest.date)} — {digest.headline}",
+                "emoji": True,
+            },
+        }
+    ]
+    for theme in digest.themes:
+        blocks.extend(_theme_blocks(theme))
+    if digest.quick_hits:
+        bulleted = "\n".join(f"• {h}" for h in digest.quick_hits)
+        blocks.extend(_section_chunks(f"*Quick hits*\n{bulleted}"))
+    if digest.links:
+        link_lines = [f"<{link.url}|{link.title}>" for link in digest.links]
+        blocks.extend(_section_chunks("*Links*\n" + "\n".join(link_lines)))
+    blocks.append(_coverage_footer(fetch_summary))
+    return blocks
+
+
+def _theme_blocks(theme: DigestTheme) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = [{"type": "divider"}]
+    blocks.extend(_section_chunks(f"*{theme.title}*\n{theme.synthesis}"))
+    if theme.notable_posts:
+        notable_lines = [
+            f"• <{p.url}|@{p.handle.lstrip('@')}>: {p.excerpt}" for p in theme.notable_posts
+        ]
+        blocks.extend(_section_chunks("\n".join(notable_lines)))
+    return blocks
+
+
+def _section_chunks(text: str) -> list[dict[str, Any]]:
+    """Split a long section into multiple section blocks under the Slack char limit."""
+    if len(text) <= SLACK_SECTION_TEXT_MAX:
+        return [_section(text)]
+    chunks: list[str] = []
+    cursor = 0
+    while cursor < len(text):
+        chunks.append(text[cursor : cursor + SLACK_SECTION_TEXT_MAX])
+        cursor += SLACK_SECTION_TEXT_MAX
+    return [_section(c) for c in chunks]
+
+
+def _section(text: str) -> dict[str, Any]:
+    return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
+
+
+def _coverage_footer(fetch_summary: dict[str, int]) -> dict[str, Any]:
+    fetched = fetch_summary.get("accounts_fetched", 0)
+    failed = fetch_summary.get("accounts_failed", 0)
+    dropped = fetch_summary.get("posts_dropped", 0)
+    total = fetched + failed
+    parts = [f"{fetched}/{total} accounts"]
+    if failed:
+        parts.append(f"{failed} unreachable")
+    if dropped:
+        parts.append(f"{dropped} posts dropped for size")
+    return {
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": " · ".join(parts)}],
+    }
 
 
 def render_raw_text(tweets: list[dict[str, Any]]) -> str:

@@ -11,9 +11,12 @@ from x_digest.digest import (
     DigestLink,
     DigestNotablePost,
     DigestTheme,
+    digest_header_marker,
     fetch_all,
     normalize,
     post_plain_text,
+    post_quiet_day,
+    post_to_slack,
     render_raw_text,
     synthesize,
 )
@@ -403,6 +406,97 @@ def test_synthesize_raises_when_retry_also_fails() -> None:
             client=client,
         )
     assert client.messages.create.call_count == 2
+
+
+def _sample_digest(synthesis: str = "Prose paragraph.") -> Digest:
+    return Digest(
+        date="2026-05-22",
+        headline="The day in one line",
+        themes=[
+            DigestTheme(
+                title="First Theme",
+                synthesis=synthesis,
+                notable_posts=[
+                    DigestNotablePost(
+                        handle="@alice",
+                        excerpt="alice quote",
+                        url="https://x.com/alice/status/1",
+                    )
+                ],
+            )
+        ],
+        quick_hits=["Quick hit one", "Quick hit two"],
+        links=[DigestLink(title="Background reading", url="https://example.com/article")],
+    )
+
+
+def _summary(fetched: int = 50, failed: int = 2, dropped: int = 0) -> dict[str, int]:
+    return {"accounts_fetched": fetched, "accounts_failed": failed, "posts_dropped": dropped}
+
+
+def test_post_to_slack_header_carries_idempotency_marker() -> None:
+    client = Mock()
+    post_to_slack(client, "C123", _sample_digest(), _summary())
+    blocks = client.chat_postMessage.call_args.kwargs["blocks"]
+    assert blocks[0]["type"] == "header"
+    header_text = blocks[0]["text"]["text"]
+    assert digest_header_marker("2026-05-22") in header_text
+
+
+def test_post_to_slack_renders_theme_title_synthesis_and_notable_posts() -> None:
+    client = Mock()
+    post_to_slack(client, "C123", _sample_digest(), _summary())
+    flat = json.dumps(client.chat_postMessage.call_args.kwargs["blocks"])
+    assert "*First Theme*" in flat
+    assert "Prose paragraph." in flat
+    assert "@alice" in flat
+    assert "alice quote" in flat
+    assert "https://x.com/alice/status/1" in flat
+
+
+def test_post_to_slack_includes_quick_hits_links_and_coverage_footer() -> None:
+    client = Mock()
+    post_to_slack(client, "C123", _sample_digest(), _summary(fetched=48, failed=2, dropped=12))
+    flat = json.dumps(client.chat_postMessage.call_args.kwargs["blocks"])
+    assert "Quick hit one" in flat
+    assert "Quick hit two" in flat
+    assert "Background reading" in flat
+    assert "https://example.com/article" in flat
+    assert "48" in flat and "50" in flat  # coverage 48/50
+    assert "12" in flat  # dropped count
+
+
+def test_post_to_slack_chunks_synthesis_over_section_text_limit() -> None:
+    huge = "x" * 6500  # well over the ~3000-char Slack section limit
+    client = Mock()
+    post_to_slack(client, "C123", _sample_digest(synthesis=huge), _summary())
+    blocks = client.chat_postMessage.call_args.kwargs["blocks"]
+    section_texts = [
+        b["text"]["text"] for b in blocks if b.get("type") == "section" and "text" in b
+    ]
+    # No single section's text should exceed the limit.
+    assert all(len(t) <= 3000 for t in section_texts)
+    # The chunks combined must still contain the body.
+    joined = "".join(section_texts)
+    assert "x" * 6000 in joined
+
+
+def test_post_to_slack_passes_fallback_text_alongside_blocks() -> None:
+    # Slack recommends always sending a `text` fallback for notifications.
+    client = Mock()
+    post_to_slack(client, "C123", _sample_digest(), _summary())
+    kwargs = client.chat_postMessage.call_args.kwargs
+    assert kwargs["text"]
+    assert "X Daily Digest" in kwargs["text"]
+
+
+def test_post_quiet_day_posts_one_line_message_with_marker() -> None:
+    client = Mock()
+    post_quiet_day(client, "C123", date_iso="2026-05-22")
+    kwargs = client.chat_postMessage.call_args.kwargs
+    assert kwargs["channel"] == "C123"
+    assert digest_header_marker("2026-05-22") in kwargs["text"]
+    assert "Quiet day" in kwargs["text"]
 
 
 def test_synthesize_logs_cost_ledger(caplog: pytest.LogCaptureFixture) -> None:
