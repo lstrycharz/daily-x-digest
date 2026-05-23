@@ -25,6 +25,7 @@ from x_digest.digest import (
     normalize,
     post_quiet_day,
     post_to_slack,
+    resolve_handles_to_ids,
     synthesize,
 )
 from x_digest.time_utils import previous_day_window, should_run
@@ -92,7 +93,65 @@ def _target_date_iso(start_iso: str) -> str:
     return start_iso.split("T")[0]
 
 
+def _resolve_ids_command(argv: list[str]) -> int:
+    """Resolve empty user_ids in accounts.json via the X /2/users/by endpoint."""
+    parser = argparse.ArgumentParser(
+        prog="x-digest resolve-ids",
+        description="Populate user_ids in accounts.json from handles",
+    )
+    parser.add_argument(
+        "--refresh-all",
+        action="store_true",
+        help="re-resolve every handle, even those with a user_id already set",
+    )
+    args = parser.parse_args(argv)
+
+    _configure_logging()
+    log = logging.getLogger("x_digest")
+    bearer_token = _require_env("X_BEARER_TOKEN")
+
+    raw = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
+    accounts: list[dict[str, str]] = raw["accounts"]
+    needs_resolution = [
+        a["handle"] for a in accounts if args.refresh_all or not a.get("user_id")
+    ]
+    if not needs_resolution:
+        log.info("no handles need resolution", extra={"stage": "resolve"})
+        return 0
+
+    log.info(
+        "resolving handles",
+        extra={"stage": "resolve", "count": len(needs_resolution)},
+    )
+    resolved, unresolved = resolve_handles_to_ids(needs_resolution, bearer_token)
+    for account in accounts:
+        if account["handle"] in resolved:
+            account["user_id"] = resolved[account["handle"]]
+    ACCOUNTS_FILE.write_text(
+        json.dumps({"accounts": accounts}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    log.info(
+        "resolve complete",
+        extra={
+            "stage": "resolve",
+            "resolved": len(resolved),
+            "unresolved": unresolved,
+        },
+    )
+    if unresolved:
+        log.warning(
+            "some handles could not be resolved (suspended/renamed?)",
+            extra={"stage": "resolve", "unresolved_handles": unresolved},
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv and raw_argv[0] == "resolve-ids":
+        return _resolve_ids_command(raw_argv[1:])
+
     parser = argparse.ArgumentParser(prog="x-digest", description="X Daily Digest")
     parser.add_argument("--force", action="store_true", help="skip the hour gate")
     parser.add_argument(
@@ -104,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         "--account",
         help="limit to a single handle from accounts.json",
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
 
     _configure_logging()
     log = logging.getLogger("x_digest")

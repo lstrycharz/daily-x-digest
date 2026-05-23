@@ -82,6 +82,7 @@ RETRY_MAX_ATTEMPTS = 3
 BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_CAP_SECONDS = 30.0
 FAIL_RATIO_THRESHOLD = 0.5
+RESOLVE_BATCH_SIZE = 100
 
 
 def fetch_all(
@@ -153,6 +154,39 @@ def _fetch_one_account(
         if not next_token:
             return tweets, includes
         params["pagination_token"] = next_token
+
+
+def resolve_handles_to_ids(
+    handles: list[str],
+    bearer_token: str,
+) -> tuple[dict[str, str], list[str]]:
+    """Look up X user IDs for the given handles. Returns (resolved, unresolved).
+
+    Batches up to 100 handles per API call (the X API's limit). Suspended,
+    renamed, or deleted handles appear in the response's `errors` array and
+    end up in `unresolved` — the caller can warn and skip them.
+    """
+    resolved: dict[str, str] = {}
+    unresolved: list[str] = []
+    headers = {"Authorization": f"Bearer {bearer_token}"}
+
+    with httpx.Client(timeout=HTTP_TIMEOUT, headers=headers) as client:
+        for batch_start in range(0, len(handles), RESOLVE_BATCH_SIZE):
+            batch = handles[batch_start : batch_start + RESOLVE_BATCH_SIZE]
+            response = client.get(
+                f"{X_API_BASE}/users/by",
+                params={"usernames": ",".join(batch)},
+            )
+            response.raise_for_status()
+            body = response.json()
+            for user in body.get("data", []) or []:
+                resolved[user["username"]] = user["id"]
+            for err in body.get("errors", []) or []:
+                missing = err.get("value")
+                if missing:
+                    unresolved.append(missing)
+
+    return resolved, unresolved
 
 
 def _request_with_retry(

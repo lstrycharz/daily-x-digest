@@ -16,6 +16,7 @@ from x_digest.digest import (
     normalize,
     post_quiet_day,
     post_to_slack,
+    resolve_handles_to_ids,
     synthesize,
 )
 
@@ -198,6 +199,60 @@ def test_fetch_all_raises_when_failure_ratio_exceeds_threshold() -> None:
             end_iso="2026-05-23T04:00:00Z",
             bearer_token="fake-token",
         )
+
+
+@respx.mock
+def test_resolve_handles_to_ids_returns_username_to_id_mapping() -> None:
+    respx.get("https://api.x.com/2/users/by").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "111", "name": "Karpathy", "username": "karpathy"},
+                    {"id": "222", "name": "Greg", "username": "gregisenberg"},
+                ]
+            },
+        )
+    )
+    resolved, unresolved = resolve_handles_to_ids(
+        ["karpathy", "gregisenberg"], bearer_token="fake-token"
+    )
+    assert resolved == {"karpathy": "111", "gregisenberg": "222"}
+    assert unresolved == []
+
+
+@respx.mock
+def test_resolve_handles_to_ids_batches_when_over_one_hundred() -> None:
+    # Two calls: first 100 handles, then 50 handles.
+    route = respx.get("https://api.x.com/2/users/by").mock(
+        return_value=httpx.Response(200, json={"data": []})
+    )
+    handles = [f"user{i}" for i in range(150)]
+    resolve_handles_to_ids(handles, bearer_token="fake-token")
+    assert route.call_count == 2
+
+
+@respx.mock
+def test_resolve_handles_to_ids_records_unresolved_handles_from_errors() -> None:
+    respx.get("https://api.x.com/2/users/by").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [{"id": "333", "name": "Simon", "username": "simonw"}],
+                "errors": [
+                    {
+                        "value": "deletedhandle",
+                        "detail": "Could not find user with usernames: [deletedhandle].",
+                    }
+                ],
+            },
+        )
+    )
+    resolved, unresolved = resolve_handles_to_ids(
+        ["simonw", "deletedhandle"], bearer_token="fake-token"
+    )
+    assert resolved == {"simonw": "333"}
+    assert unresolved == ["deletedhandle"]
 
 
 def _minimal_digest_payload(themes: int = 1) -> dict[str, object]:

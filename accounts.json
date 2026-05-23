@@ -1,8 +1,16 @@
 {
   "accounts": [
     {
-      "handle": "paulg",
-      "user_id": "183749519"
+      "handle": "karpathy",
+      "user_id": ""
+    },
+    {
+      "handle": "gregisenberg",
+      "user_id": ""
+    },
+    {
+      "handle": "simonw",
+      "user_id": ""
     }
   ]
 }
