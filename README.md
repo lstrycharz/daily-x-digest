@@ -46,14 +46,6 @@ If anything breaks, it sends a separate short note to a "failure alerts" channel
 
 ---
 
-## What it costs
-
-For ~50 accounts on a typical news day, expect about **$0.20–$0.50 per run** from the AI summary call — roughly **$6–$15 a month**. X and Slack are free at this volume.
-
-Every run logs a "cost ledger" line with the exact token count and estimated dollar cost so you can watch it.
-
----
-
 ## Setting up your own copy
 
 This part assumes you can run a few commands in a terminal. If `pip`, `bash`, and "environment variables" mean nothing to you, the rest of this page won't be useful — but the result is a fully automatic morning digest, so it's worth finding a friend who can help.
@@ -208,12 +200,6 @@ Common things to check first when the failure alert fires:
 
 ---
 
-## Privacy note
-
-If you publish this repo publicly, **`accounts.json` reveals which X accounts you follow as signal**. For most people that's harmless — but if your list grows to reveal personal interests, professional rivals, or anything else you'd rather not advertise, move the file out of the repo (gitignore it) and store its content as a GitHub Actions secret instead. Ask if you want help with that change.
-
----
-
 ## For developers — quick reference
 
 ```bash
@@ -226,9 +212,3 @@ If you publish this repo publicly, **`accounts.json` reveals which X accounts yo
 ```
 
 Three source files: `digest.py` (the pipeline), `time_utils.py` (date math), `__main__.py` (CLI + logging + config). Strict TDD; one deep module by design. See `.claude/CLAUDE.md` for project rules.
-
----
-
-## License & credits
-
-Built by [Lukasz Strycharz](https://github.com/lukaszstrycharz) with [Claude Code](https://claude.com/claude-code). Use this freely; no warranty.
