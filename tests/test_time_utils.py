@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
 
-from x_digest.time_utils import previous_day_window
+import pytest
+
+from x_digest.time_utils import previous_day_window, should_run
 
 
 def test_previous_day_window_returns_yesterday_et_as_utc_iso() -> None:
@@ -35,3 +37,22 @@ def test_previous_day_window_spans_dst_fall_back() -> None:
     start, end = previous_day_window(now, "America/New_York")
     assert start == "2026-11-01T04:00:00Z"
     assert end == "2026-11-02T05:00:00Z"
+
+
+@pytest.mark.parametrize(
+    ("now_utc", "expected"),
+    [
+        # EDT (UTC-4), DST in effect from second Sunday of March to first Sunday of November.
+        (datetime(2026, 5, 23, 11, 0, tzinfo=UTC), True),   # 07:00 EDT → hour 7
+        (datetime(2026, 5, 23, 12, 0, tzinfo=UTC), True),   # 08:00 EDT → hour 8 (drift catch)
+        (datetime(2026, 5, 23, 10, 0, tzinfo=UTC), False),  # 06:00 EDT → hour 6
+        (datetime(2026, 5, 23, 13, 0, tzinfo=UTC), False),  # 09:00 EDT → hour 9
+        # EST (UTC-5).
+        (datetime(2026, 1, 15, 11, 0, tzinfo=UTC), False),  # 06:00 EST → hour 6 (skips)
+        (datetime(2026, 1, 15, 12, 0, tzinfo=UTC), True),   # 07:00 EST → hour 7
+        (datetime(2026, 1, 15, 13, 0, tzinfo=UTC), True),   # 08:00 EST → hour 8 (drift catch)
+        (datetime(2026, 1, 15, 14, 0, tzinfo=UTC), False),  # 09:00 EST → hour 9
+    ],
+)
+def test_should_run_only_in_et_hours_seven_or_eight(now_utc: datetime, expected: bool) -> None:
+    assert should_run(now_utc, "America/New_York") is expected
