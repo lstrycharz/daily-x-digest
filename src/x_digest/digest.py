@@ -26,6 +26,7 @@ DEFAULT_CLAUDE_MAX_TOKENS = 5000
 
 SLACK_SECTION_TEXT_MAX = 3000
 DIGEST_HEADER_PREFIX = "📰 X Daily Digest"
+SLACK_HISTORY_LOOKBACK = 5
 
 
 def digest_header_marker(date_iso: str) -> str:
@@ -458,6 +459,30 @@ def post_to_slack(
         blocks=blocks,
         text=f"{digest_header_marker(digest.date)} — {digest.headline}",
     )
+
+
+def already_posted_today(client: WebClient, channel: str, date_iso: str) -> bool:
+    """True if a digest for `date_iso` already appears in the channel's recent history.
+
+    Replaces the state-file mechanism — one Slack call per run, no artifacts.
+    On any API failure, returns False and logs a warning: better to risk a rare
+    double-post than to skip the digest entirely.
+    """
+    marker = digest_header_marker(date_iso)
+    try:
+        history = client.conversations_history(channel=channel, limit=SLACK_HISTORY_LOOKBACK)
+    except Exception as exc:
+        _log.warning(
+            "idempotency check failed — proceeding without it",
+            extra={"stage": "deliver", "error": str(exc)},
+        )
+        return False
+    messages: list[dict[str, Any]] = history.get("messages") or []
+    for message in messages:
+        text = message.get("text", "")
+        if text.startswith(marker):
+            return True
+    return False
 
 
 def post_quiet_day(client: WebClient, channel: str, date_iso: str) -> None:

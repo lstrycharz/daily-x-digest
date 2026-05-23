@@ -21,6 +21,7 @@ from anthropic import Anthropic
 from slack_sdk import WebClient
 
 from x_digest.digest import (
+    already_posted_today,
     fetch_all,
     normalize,
     post_quiet_day,
@@ -183,6 +184,17 @@ def main(argv: list[str] | None = None) -> int:
 
     start_iso, end_iso = previous_day_window(now_utc, tz_name)
     target_date = _target_date_iso(start_iso)
+
+    if not args.force and not args.dry_run:
+        assert slack_client is not None
+        assert slack_channel is not None
+        if already_posted_today(slack_client, slack_channel, target_date):
+            log.info(
+                "digest already posted today — exiting",
+                extra={"stage": "run", "target_date": target_date},
+            )
+            return 0
+
     accounts = _load_accounts(args.account)
 
     log.info(

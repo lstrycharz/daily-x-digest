@@ -11,6 +11,7 @@ from x_digest.digest import (
     DigestLink,
     DigestNotablePost,
     DigestTheme,
+    already_posted_today,
     digest_header_marker,
     fetch_all,
     normalize,
@@ -570,6 +571,38 @@ def test_post_quiet_day_posts_one_line_message_with_marker() -> None:
     assert kwargs["channel"] == "C123"
     assert digest_header_marker("2026-05-22") in kwargs["text"]
     assert "Quiet day" in kwargs["text"]
+
+
+def test_already_posted_today_returns_true_when_marker_found_in_history() -> None:
+    client = Mock()
+    client.conversations_history.return_value = {
+        "ok": True,
+        "messages": [
+            {"text": "hi there"},
+            {"text": f"{digest_header_marker('2026-05-22')} — Headline goes here"},
+        ],
+    }
+    assert already_posted_today(client, channel="C123", date_iso="2026-05-22") is True
+    client.conversations_history.assert_called_once_with(channel="C123", limit=5)
+
+
+def test_already_posted_today_returns_false_when_marker_for_today_is_absent() -> None:
+    client = Mock()
+    client.conversations_history.return_value = {
+        "ok": True,
+        "messages": [
+            {"text": f"{digest_header_marker('2026-05-21')} — yesterday's digest"},
+            {"text": "unrelated channel chatter"},
+        ],
+    }
+    assert already_posted_today(client, channel="C123", date_iso="2026-05-22") is False
+
+
+def test_already_posted_today_returns_false_when_history_call_fails() -> None:
+    client = Mock()
+    client.conversations_history.side_effect = RuntimeError("Slack API exploded")
+    # Failure must NOT skip the day — proceed and risk a rare double-post.
+    assert already_posted_today(client, channel="C123", date_iso="2026-05-22") is False
 
 
 def test_synthesize_logs_cost_ledger(caplog: pytest.LogCaptureFixture) -> None:
