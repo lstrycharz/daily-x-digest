@@ -8,7 +8,12 @@ on:
     #   EST (Nov-Mar): 11:00 UTC = 06:00 ET (gate skip), 12:00 UTC = 07:00 ET (runs).
     - cron: "0 11 * * *"
     - cron: "0 12 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Skip the hour gate (idempotency still applies — use for off-hour testing)"
+        type: boolean
+        default: false
 
 jobs:
   digest:
@@ -34,7 +39,12 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
-        run: python -m x_digest
+        run: |
+          if [ "${{ inputs.force }}" = "true" ]; then
+            python -m x_digest --force
+          else
+            python -m x_digest
+          fi
 
       - name: Notify on failure
         if: failure()
