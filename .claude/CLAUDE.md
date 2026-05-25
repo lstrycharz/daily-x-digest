@@ -64,7 +64,7 @@ prompts/system.md  # Claude system prompt (added in Phase 2)
 
 ## Common Gotchas
 - DST: ET ↔ UTC offset changes twice a year. Always use `zoneinfo`, never a fixed offset.
-- The dual-cron at 11:00 + 12:00 UTC relies on the {7,8}-hour gate + Slack-history idempotency check — don't "fix" it to a single cron without restoring those guards.
+- The triple-cron at 11:17 + 12:17 + 13:17 UTC relies on the {7,8}-hour gate + Slack-history idempotency check — don't "fix" it to a single cron without restoring those guards. The :17 offset dodges the top-of-hour cron rush that GH Actions silently drops under load.
 - Long X posts: the real text lives in `note_tweet.text`, not `text` (Phase 2 normalization).
 - Quoted-tweet source can be missing from `includes.tweets` (deleted/suspended) — render the parent without the quote, not as a hard fail.
 - Claude `stop_reason="max_tokens"` is not a parse failure — it's a "raise the max_tokens constant" signal (Phase 2 synthesizer).
