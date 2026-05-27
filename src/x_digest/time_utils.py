@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-ALLOWED_DELIVERY_HOURS: frozenset[int] = frozenset({7, 8})
+ALLOWED_DELIVERY_HOURS: frozenset[int] = frozenset({7, 8, 9, 10, 11})
 
 
 def previous_day_window(now_utc: datetime, tz_name: str) -> tuple[str, str]:
@@ -23,10 +23,13 @@ def previous_day_window(now_utc: datetime, tz_name: str) -> tuple[str, str]:
 def should_run(now_utc: datetime, tz_name: str) -> bool:
     """True iff the local hour of `now_utc` in `tz_name` is in the delivery window.
 
-    With both GH Actions cron fires (11:00 and 12:00 UTC) able to drift up to ~60 min,
-    the {7, 8}-hour gate ensures at least one fire per day lands inside the window
-    in both EST and EDT. The Slack-history idempotency check (in digest.py) prevents
-    double-posting when both fires land in the window on the same local day.
+    The window is intentionally wide (7am-11am ET) to tolerate GitHub Actions
+    cron delays of up to ~4 hours, which happen routinely under platform load.
+    The Slack-history idempotency check (in digest.py) ensures only the first
+    fire of the day posts; later delayed fires skip silently.
+
+    Net behaviour: a digest arrives within the morning hours every day, even
+    when GitHub silently delays scheduled fires.
     """
     return now_utc.astimezone(ZoneInfo(tz_name)).hour in ALLOWED_DELIVERY_HOURS
 

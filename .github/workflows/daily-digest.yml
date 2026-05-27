@@ -2,16 +2,16 @@ name: X Daily Digest
 
 on:
   schedule:
-    # Three off-hour UTC fires per day. The {7,8}-hour ET gate in
-    # time_utils.should_run plus the Slack-history idempotency check ensure
-    # exactly one digest posts no matter how many slots fire:
-    #   EDT (Mar-Nov): 11:17 = 07:17 ET (in window), 12:17 = 08:17 ET (idempotent skip), 13:17 = 09:17 ET (gate skip).
-    #   EST (Nov-Mar): 11:17 = 06:17 ET (gate skip), 12:17 = 07:17 ET (in window), 13:17 = 08:17 ET (idempotent skip).
-    # The :17 offset dodges the top-of-hour cron rush where GH Actions
-    # silently drops scheduled fires under load.
+    # Four off-hour UTC fires per day. The 7am-11am ET delivery window in
+    # time_utils.should_run + the Slack-history idempotency check together
+    # ensure exactly one digest posts per day even when GH Actions silently
+    # delays fires by 1-4 hours (observed: routine multi-hour delays in 2026).
+    # First on-time fire posts; later fires (delayed or on-time) skip via
+    # idempotency. The :17 offset dodges the top-of-hour cron rush.
     - cron: "17 11 * * *"
     - cron: "17 12 * * *"
     - cron: "17 13 * * *"
+    - cron: "17 14 * * *"
   workflow_dispatch:
     inputs:
       force:

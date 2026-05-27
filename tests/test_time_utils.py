@@ -43,16 +43,19 @@ def test_previous_day_window_spans_dst_fall_back() -> None:
     ("now_utc", "expected"),
     [
         # EDT (UTC-4), DST in effect from second Sunday of March to first Sunday of November.
-        (datetime(2026, 5, 23, 11, 0, tzinfo=UTC), True),   # 07:00 EDT → hour 7
-        (datetime(2026, 5, 23, 12, 0, tzinfo=UTC), True),   # 08:00 EDT → hour 8 (drift catch)
-        (datetime(2026, 5, 23, 10, 0, tzinfo=UTC), False),  # 06:00 EDT → hour 6
-        (datetime(2026, 5, 23, 13, 0, tzinfo=UTC), False),  # 09:00 EDT → hour 9
+        # Window is hours 7-11 ET (4-hour drift tolerance vs GH Actions cron unreliability).
+        (datetime(2026, 5, 23, 10, 0, tzinfo=UTC), False),  # 06:00 EDT → hour 6 (before window)
+        (datetime(2026, 5, 23, 11, 0, tzinfo=UTC), True),   # 07:00 EDT → hour 7 (window start)
+        (datetime(2026, 5, 23, 12, 0, tzinfo=UTC), True),   # 08:00 EDT → hour 8
+        (datetime(2026, 5, 23, 14, 0, tzinfo=UTC), True),   # 10:00 EDT → hour 10
+        (datetime(2026, 5, 23, 15, 0, tzinfo=UTC), True),   # 11:00 EDT → hour 11 (window end)
+        (datetime(2026, 5, 23, 16, 0, tzinfo=UTC), False),  # 12:00 EDT → hour 12 (after window)
         # EST (UTC-5).
-        (datetime(2026, 1, 15, 11, 0, tzinfo=UTC), False),  # 06:00 EST → hour 6 (skips)
-        (datetime(2026, 1, 15, 12, 0, tzinfo=UTC), True),   # 07:00 EST → hour 7
-        (datetime(2026, 1, 15, 13, 0, tzinfo=UTC), True),   # 08:00 EST → hour 8 (drift catch)
-        (datetime(2026, 1, 15, 14, 0, tzinfo=UTC), False),  # 09:00 EST → hour 9
+        (datetime(2026, 1, 15, 11, 0, tzinfo=UTC), False),  # 06:00 EST → hour 6 (before window)
+        (datetime(2026, 1, 15, 12, 0, tzinfo=UTC), True),   # 07:00 EST → hour 7 (window start)
+        (datetime(2026, 1, 15, 16, 0, tzinfo=UTC), True),   # 11:00 EST → hour 11 (window end)
+        (datetime(2026, 1, 15, 17, 0, tzinfo=UTC), False),  # 12:00 EST → hour 12 (after window)
     ],
 )
-def test_should_run_only_in_et_hours_seven_or_eight(now_utc: datetime, expected: bool) -> None:
+def test_should_run_only_in_morning_et_window(now_utc: datetime, expected: bool) -> None:
     assert should_run(now_utc, "America/New_York") is expected
