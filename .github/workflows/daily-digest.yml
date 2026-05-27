@@ -1,17 +1,10 @@
 name: X Daily Digest
 
 on:
-  schedule:
-    # Four off-hour UTC fires per day. The 7am-11am ET delivery window in
-    # time_utils.should_run + the Slack-history idempotency check together
-    # ensure exactly one digest posts per day even when GH Actions silently
-    # delays fires by 1-4 hours (observed: routine multi-hour delays in 2026).
-    # First on-time fire posts; later fires (delayed or on-time) skip via
-    # idempotency. The :17 offset dodges the top-of-hour cron rush.
-    - cron: "17 11 * * *"
-    - cron: "17 12 * * *"
-    - cron: "17 13 * * *"
-    - cron: "17 14 * * *"
+  # GH Actions cron was unreliable — fires routinely delayed 1-4 hours and
+  # silently dropped under platform load. We trigger this workflow externally
+  # via cron-job.org POSTing to the workflow_dispatch endpoint daily at 7am ET.
+  # See README for setup details.
   workflow_dispatch:
     inputs:
       force:

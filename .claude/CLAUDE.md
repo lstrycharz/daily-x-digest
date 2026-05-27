@@ -64,7 +64,7 @@ prompts/system.md  # Claude system prompt (added in Phase 2)
 
 ## Common Gotchas
 - DST: ET ↔ UTC offset changes twice a year. Always use `zoneinfo`, never a fixed offset.
-- The quadruple-cron at 11:17/12:17/13:17/14:17 UTC + the wide 7am-11am ET delivery window + the Slack-history idempotency check are a *system* that survives GH Actions routinely delaying scheduled fires by 1-4 hours. Don't "fix" any one piece without understanding what the others depend on. Narrowing the window or dropping a cron slot will silently miss days.
+- Daily trigger comes from an external cron service (cron-job.org) POSTing to the workflow_dispatch API — GH Actions native cron was too unreliable (fires delayed 1-4 hours, silently dropped). The 7am-11am ET delivery window + Slack-history idempotency check are still in place as defence-in-depth against duplicate or delayed external triggers.
 - Long X posts: the real text lives in `note_tweet.text`, not `text` (Phase 2 normalization).
 - Quoted-tweet source can be missing from `includes.tweets` (deleted/suspended) — render the parent without the quote, not as a hard fail.
 - Claude `stop_reason="max_tokens"` is not a parse failure — it's a "raise the max_tokens constant" signal (Phase 2 synthesizer).
